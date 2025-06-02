@@ -1,26 +1,25 @@
-import sqlite3
-import random
 import os
-import threading
+import random
+import sqlite3
+import asyncio
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputTextMessageContent, InlineQueryResultArticle
-from aiogram.utils import executor
+from aiogram.utils.executor import start_polling
 
 from fastapi import FastAPI
 import uvicorn
 
-# خواندن توکن از متغیر محیطی
+# توکن از ENV
 API_TOKEN = os.getenv('BOT_TOKEN')
 
-# ساخت ربات
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
-# ساخت اپلیکیشن FastAPI
+# FastAPI app
 app = FastAPI()
 
-# اتصال به دیتابیس SQLite
+# SQLite database
 conn = sqlite3.connect('database.db', check_same_thread=False)
 cursor = conn.cursor()
 
@@ -35,7 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
 ''')
 conn.commit()
 
-# تابع تعیین لقب بر اساس امتیاز
+# لقب‌ها
 def get_title(axe_size):
     if axe_size < 20:
         return "جوجه تبر"
@@ -48,7 +47,7 @@ def get_title(axe_size):
     else:
         return "شاه تبر"
 
-# ثبت یا آپدیت کاربر
+# ثبت کاربر
 def register_user(group_id, user_id, username):
     cursor.execute('SELECT * FROM users WHERE group_id = ? AND user_id = ?', (group_id, user_id))
     if cursor.fetchone() is None:
@@ -58,15 +57,14 @@ def register_user(group_id, user_id, username):
         cursor.execute('UPDATE users SET username = ? WHERE group_id = ? AND user_id = ?', (username, group_id, user_id))
         conn.commit()
 
-# هندلر اینلاین کوئری
+# هندلر اینلاین
 @dp.inline_handler()
 async def inline_handler(query: types.InlineQuery):
     user_id = query.from_user.id
     username = query.from_user.full_name
-    group_id = query.chat_type
+    group_id = user_id  # چون در inline نمی‌تونیم group_id واقعی بگیریم، از user_id به عنوان key موقت استفاده می‌کنیم
 
     text = query.query.lower()
-
     results = []
 
     if 'رشد' in text:
@@ -74,17 +72,14 @@ async def inline_handler(query: types.InlineQuery):
         cursor.execute('SELECT axe_size FROM users WHERE group_id = ? AND user_id = ?', (group_id, user_id))
         result = cursor.fetchone()
         if result:
-            new_size = result[0] + grow
-            if new_size < 0:
-                new_size = 0
+            new_size = max(0, result[0] + grow)
             cursor.execute('UPDATE users SET axe_size = ? WHERE group_id = ? AND user_id = ?', (new_size, group_id, user_id))
-            conn.commit()
         else:
             new_size = max(0, grow)
             register_user(group_id, user_id, username)
             cursor.execute('UPDATE users SET axe_size = ? WHERE group_id = ? AND user_id = ?', (new_size, group_id, user_id))
-            conn.commit()
-        
+        conn.commit()
+
         title = get_title(new_size)
         results.append(
             InlineQueryResultArticle(
@@ -101,10 +96,10 @@ async def inline_handler(query: types.InlineQuery):
         result = cursor.fetchone()
         if not result:
             register_user(group_id, user_id, username)
-            cursor.execute('SELECT axe_size FROM users WHERE group_id = ? AND user_id = ?', (group_id, user_id))
-            result = cursor.fetchone()
+            current_size = 0
+        else:
+            current_size = result[0]
 
-        current_size = result[0]
         chance = random.randint(1, 100)
         if chance <= 70:
             new_size = 0
@@ -127,77 +122,40 @@ async def inline_handler(query: types.InlineQuery):
     elif 'تبرزن' in text:
         cursor.execute('SELECT username, axe_size FROM users WHERE group_id = ? ORDER BY axe_size DESC LIMIT 10', (group_id,))
         rows = cursor.fetchall()
-        if not rows:
-            leaderboard = "هیچ تبرزنی هنوز وجود نداره!"
-        else:
-            leaderboard = ""
-            for idx, (user, size) in enumerate(rows, start=1):
-                leaderboard += f"{idx}. {user} ({size} واحد - {get_title(size)})\\n"
+        leaderboard = "\n".join(
+            f"{idx + 1}. {row[0]} ({row[1]} واحد - {get_title(row[1])})"
+            for idx, row in enumerate(rows)
+        ) or "هیچ تبرزنی هنوز وجود نداره!"
 
         results.append(
             InlineQueryResultArticle(
                 id='3',
                 title="تبرزن‌های برتر",
-                input_message_content=InputTextMessageContent(f"🏆 لیست تبرزن‌های برتر:\\n\\n{leaderboard}")
+                input_message_content=InputTextMessageContent(f"🏆 لیست تبرزن‌های برتر:\n\n{leaderboard}")
             )
         )
 
-    elif 'تبر زدن' in text:
-        parts = text.split()
-        if len(parts) < 3:
-            results.append(
-                InlineQueryResultArticle(
-                    id='4',
-                    title="خطا",
-                    input_message_content=InputTextMessageContent("استفاده درست: تبر زدن به [اسم]")
-                )
-            )
-        else:
-            target_name = ' '.join(parts[2:])
-            size = random.randint(1, 10)
-
-            keyboard = InlineKeyboardMarkup().add(
-                InlineKeyboardButton(f"تبرش کن! ({size} واحد)", callback_data=f"attack|{user_id}|{username}|{size}")
-            )
-
-            results.append(
-                InlineQueryResultArticle(
-                    id='5',
-                    title="حمله تبر",
-                    input_message_content=InputTextMessageContent(f"{username} می‌خواهد {target_name} را {size} واحد تبر بزند!"),
-                    reply_markup=keyboard
-                )
-            )
-
     await query.answer(results, cache_time=0)
 
-# هندلر کلیک دکمه
+# دکمه‌ها (فعلاً غیرفعال)
 @dp.callback_query_handler(lambda c: c.data.startswith('attack'))
 async def process_callback_attack(callback_query: types.CallbackQuery):
-    data = callback_query.data.split('|')
-    attacker_id = int(data[1])
-    attacker_name = data[2]
-    damage = int(data[3])
+    await callback_query.answer("حمله تبر هنوز فعال نشده", show_alert=True)
 
-    if callback_query.from_user.id == attacker_id:
-        await callback_query.answer("نمی‌تونی خودتو بزنی!", show_alert=True)
-        return
-
-    message = f"🎯 {callback_query.from_user.full_name} {attacker_name} را {damage} واحد تبر زد!"
-
-    await callback_query.message.edit_text(message)
-
-# روت ساده برای زنده نگه داشتن سرور
+# FastAPI روت تستی
 @app.get("/")
 def read_root():
     return {"message": "Axe Bot is Alive!"}
 
-# استارت همزمان ربات و سرور
+# اجرای موازی
+async def main():
+    config = uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    server = uvicorn.Server(config)
+
+    await asyncio.gather(
+        dp.start_polling(),
+        server.serve()
+    )
+
 if __name__ == '__main__':
-    def start_bot():
-        executor.start_polling(dp, skip_updates=True)
-
-    bot_thread = threading.Thread(target=start_bot)
-    bot_thread.start()
-
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv('PORT', 8080)))
+    asyncio.run(main())
