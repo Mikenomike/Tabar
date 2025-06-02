@@ -1,15 +1,23 @@
 import sqlite3
 import random
 import os
+import asyncio
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputTextMessageContent, InlineQueryResultArticle
 from aiogram.utils import executor
+
+from fastapi import FastAPI
+import uvicorn
 
 API_TOKEN = os.getenv('BOT_TOKEN')
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
+app = FastAPI()  # ایجاد سرور FastAPI
+
+# اتصال به دیتابیس
 conn = sqlite3.connect('database.db')
 cursor = conn.cursor()
 
@@ -172,6 +180,17 @@ async def process_callback_attack(callback_query: types.CallbackQuery):
 
     await callback_query.message.edit_text(message)
 
+# روت ساده برای زنده نگه داشتن سرور
+@app.get("/")
+def read_root():
+    return {"message": "Axe Bot is Alive!"}
+
+async def main():
+    loop = asyncio.get_event_loop()
+    loop.create_task(executor.start_polling(dp, skip_updates=True))
+    config = uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv('PORT', 8080)))
+    server = uvicorn.Server(config)
+    await server.serve()
+
 if __name__ == '__main__':
-    print('ربات اجرا شد...')
-    executor.start_polling(dp, skip_updates=True)
+    asyncio.run(main())
