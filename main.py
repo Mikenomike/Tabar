@@ -1,171 +1,257 @@
-import sqlite3 import random import os import threading import datetime
+import sqlite3
+import random
+import os
+import time
+from datetime import datetime, timedelta
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
+from fastapi import FastAPI
+import uvicorn
+import threading
 
-from aiogram import Bot, Dispatcher, types from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputTextMessageContent, InlineQueryResultArticle from aiogram.utils import executor from fastapi import FastAPI import uvicorn
-
+# تنظیمات
 API_TOKEN = os.getenv("BOT_TOKEN")
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
+app = FastAPI()
 
-bot = Bot(token=API_TOKEN) dp = Dispatcher(bot) app = FastAPI()
+# دیتابیس
+conn = sqlite3.connect('database.db', check_same_thread=False)
+cursor = conn.cursor()
 
-conn = sqlite3.connect("database.db", check_same_thread=False) cursor = conn.cursor()
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS users (
+    group_id INTEGER,
+    user_id INTEGER,
+    username TEXT,
+    axe_size INTEGER DEFAULT 0,
+    last_grow INTEGER DEFAULT 0,
+    PRIMARY KEY (group_id, user_id)
+)
+''')
+conn.commit()
 
-cursor.execute(''' CREATE TABLE IF NOT EXISTS users ( group_id INTEGER, user_id INTEGER, username TEXT, axe_size INTEGER DEFAULT 0, last_growth TEXT, PRIMARY KEY (group_id, user_id) ) ''') conn.commit()
-
-def get_title(axe_size): if axe_size < 20: return "جوجه تبر" elif axe_size < 50: return "تبر تازه‌کار" elif axe_size < 80: return "تبرزن قوی" elif axe_size < 100: return "تبرزن ماهر" else: return "شاه تبر"
-
-def register_user(group_id, user_id, username): cursor.execute("SELECT * FROM users WHERE group_id = ? AND user_id = ?", (group_id, user_id)) if cursor.fetchone() is None: cursor.execute("INSERT INTO users (group_id, user_id, username, axe_size, last_growth) VALUES (?, ?, ?, ?, ?)", (group_id, user_id, username, 0, "")) conn.commit() else: cursor.execute("UPDATE users SET username = ? WHERE group_id = ? AND user_id = ?", (username, group_id, user_id)) conn.commit()
-
-@dp.inline_handler() async def inline_handler(query: types.InlineQuery): user_id = query.from_user.id username = query.from_user.full_name text = query.query.lower().strip() group_id = user_id  # به‌جای chat_id که نداریم، از user_id برای ایزولیشن استفاده می‌کنیم
-
-results = []
-now = datetime.datetime.utcnow().date().isoformat()
-
-register_user(group_id, user_id, username)
-cursor.execute("SELECT axe_size, last_growth FROM users WHERE group_id = ? AND user_id = ?", (group_id, user_id))
-user_data = cursor.fetchone()
-axe_size, last_growth = user_data
-
-if not text:
-    keyboard = [
-        InlineKeyboardButton("🌱 رشد تبر", switch_inline_query_current_chat="رشد"),
-        InlineKeyboardButton("🎰 امتحان شانس", switch_inline_query_current_chat="شانس"),
-        InlineKeyboardButton("📊 تبرزن‌ها", switch_inline_query_current_chat="تبرزن"),
-        InlineKeyboardButton("⚔️ مسابقه تبر (عدد) ✍️", switch_inline_query_current_chat="5 مسابقه تبر")
-    ]
-    markup = InlineKeyboardMarkup(row_width=2).add(*keyboard)
-
-    results.append(
-        InlineQueryResultArticle(
-            id="menu",
-            title="منوی بازی تبرزن",
-            input_message_content=InputTextMessageContent("یکی از گزینه‌ها رو انتخاب کن!"),
-            reply_markup=markup
-        )
-    )
-
-elif "رشد" in text:
-    if last_growth == now:
-        results.append(
-            InlineQueryResultArticle(
-                id="already_grew",
-                title="🚫 امروز رشد کردی!",
-                input_message_content=InputTextMessageContent("تو امروز قبلاً رشد دادی! فردا دوباره بیا.")
-            )
-        )
+# تابع عنوان بر اساس امتیاز
+def get_title(size):
+    if size < 20:
+        return "جوجه تبر"
+    elif size < 50:
+        return "تبر تازه‌کار"
+    elif size < 80:
+        return "تبرزن قوی"
+    elif size < 100:
+        return "تبرزن ماهر"
     else:
-        grow = random.randint(-3, 10)
-        new_size = max(0, axe_size + grow)
-        cursor.execute("UPDATE users SET axe_size = ?, last_growth = ? WHERE group_id = ? AND user_id = ?",
-                       (new_size, now, group_id, user_id))
+        return "شاه تبر"
+
+# ثبت یا آپدیت کاربر
+def register_user(group_id, user_id, username):
+    cursor.execute('SELECT * FROM users WHERE group_id = ? AND user_id = ?', (group_id, user_id))
+    if cursor.fetchone() is None:
+        cursor.execute('INSERT INTO users (group_id, user_id, username, axe_size, last_grow) VALUES (?, ?, ?, 0, 0)', (group_id, user_id, username))
         conn.commit()
-        title = get_title(new_size)
+    else:
+        cursor.execute('UPDATE users SET username = ? WHERE group_id = ? AND user_id = ?', (username, group_id, user_id))
+        conn.commit()
 
+# inline query
+@dp.inline_handler()
+async def inline_handler(query: types.InlineQuery):
+    user_id = query.from_user.id
+    username = query.from_user.full_name
+    text = query.query.strip()
+    group_id = query.chat_type + str(user_id)  # ایجاد group_id مجازی بر اساس کاربر (زیرا inline کوئری group info نداره)
+
+    results = []
+
+    if not text:
         results.append(
             InlineQueryResultArticle(
-                id="growth",
+                id="grow",
                 title="🌱 رشد تبر",
-                input_message_content=InputTextMessageContent(
-                    f"تبر {username} به اندازه {grow} رشد کرد! الان {new_size} واحده. ({title})")
+                input_message_content=InputTextMessageContent("رشد"),
+                description="افزایش قدرت تبر - فقط یک‌بار در روز"
+            )
+        )
+        results.append(
+            InlineQueryResultArticle(
+                id="luck",
+                title="🎲 امتحان شانس",
+                input_message_content=InputTextMessageContent("شانس"),
+                description="تبرتو دو برابر کن یا صفرش کن!"
+            )
+        )
+        results.append(
+            InlineQueryResultArticle(
+                id="top",
+                title="🏆 تبرزن‌های برتر",
+                input_message_content=InputTextMessageContent("تبرزن"),
+                description="نمایش 10 نفر برتر در این گروه"
+            )
+        )
+        results.append(
+            InlineQueryResultArticle(
+                id="duel",
+                title="⚔️ مبارزه تبر",
+                input_message_content=InputTextMessageContent("مبارزه 5"),
+                description="با یه نفر مسابقه بده و تبر بزن!"
             )
         )
 
-elif "شانس" in text:
-    chance = random.randint(1, 100)
-    if chance <= 70:
-        new_size = 0
-        message = f"💀 بدشانسی! تبر {username} صفر شد!"
-    else:
-        new_size = axe_size * 2
-        message = f"🎉 خوش‌شانسی! تبر {username} دو برابر شد و رسید به {new_size} واحد!"
+    elif text.startswith("رشد"):
+        register_user(group_id, user_id, username)
 
-    cursor.execute("UPDATE users SET axe_size = ? WHERE group_id = ? AND user_id = ?",
-                   (new_size, group_id, user_id))
-    conn.commit()
+        cursor.execute('SELECT axe_size, last_grow FROM users WHERE group_id = ? AND user_id = ?', (group_id, user_id))
+        row = cursor.fetchone()
+        now = int(time.time())
 
-    results.append(
-        InlineQueryResultArticle(
-            id="chance",
-            title="🎰 امتحان شانس",
-            input_message_content=InputTextMessageContent(message)
+        if now - row[1] < 86400:
+            message = "🌱 امروز رشد کردی! فردا دوباره امتحان کن."
+        else:
+            grow = random.randint(1, 10)
+            new_size = row[0] + grow
+            cursor.execute('UPDATE users SET axe_size = ?, last_grow = ? WHERE group_id = ? AND user_id = ?', (new_size, now, group_id, user_id))
+            conn.commit()
+            message = f"🌱 {username} تبرش {grow} واحد رشد کرد! حالا {new_size} واحد داره ({get_title(new_size)})."
+
+        results.append(
+            InlineQueryResultArticle(
+                id="grow_result",
+                title="نتیجه رشد",
+                input_message_content=InputTextMessageContent(message)
+            )
         )
-    )
 
-elif "تبرزن" in text:
-    cursor.execute("SELECT username, axe_size FROM users WHERE group_id = ? ORDER BY axe_size DESC LIMIT 10",
-                   (group_id,))
-    rows = cursor.fetchall()
-    leaderboard = "\n".join(
-        [f"{idx + 1}. {row[0]} - {row[1]} ({get_title(row[1])})" for idx, row in enumerate(rows)])
+    elif text.startswith("شانس"):
+        register_user(group_id, user_id, username)
 
-    results.append(
-        InlineQueryResultArticle(
-            id="leaderboard",
-            title="📊 تبرزن‌های برتر",
-            input_message_content=InputTextMessageContent(f"🏆 لیست تبرزن‌ها:\n{leaderboard or 'هنوز کسی نیست!'}")
+        cursor.execute('SELECT axe_size FROM users WHERE group_id = ? AND user_id = ?', (group_id, user_id))
+        size = cursor.fetchone()[0]
+        chance = random.randint(1, 100)
+
+        if chance <= 70:
+            new_size = 0
+            message = f"😢 بدشانسی! تبر {username} صفر شد!"
+        else:
+            new_size = size * 2
+            message = f"🎉 خوش‌شانسی! تبر {username} دو برابر شد و شد {new_size} واحد!"
+
+        cursor.execute('UPDATE users SET axe_size = ? WHERE group_id = ? AND user_id = ?', (new_size, group_id, user_id))
+        conn.commit()
+
+        results.append(
+            InlineQueryResultArticle(
+                id="luck_result",
+                title="نتیجه شانس",
+                input_message_content=InputTextMessageContent(message)
+            )
         )
-    )
 
-elif "مسابقه تبر" in text:
-    parts = text.split()
-    if parts[0].isdigit():
-        amount = int(parts[0])
-        if axe_size < amount:
+    elif text.startswith("تبرزن"):
+        cursor.execute('SELECT username, axe_size FROM users WHERE group_id = ? ORDER BY axe_size DESC LIMIT 10', (group_id,))
+        rows = cursor.fetchall()
+        leaderboard = "\n".join([f"{i+1}. {name} ({size}) - {get_title(size)}" for i, (name, size) in enumerate(rows)]) or "لیستی وجود ندارد."
+
+        results.append(
+            InlineQueryResultArticle(
+                id="top_result",
+                title="برترین‌ها",
+                input_message_content=InputTextMessageContent("🏆 لیست تبرزن‌ها:\n\n" + leaderboard)
+            )
+        )
+
+    elif text.startswith("مبارزه"):
+        parts = text.split()
+        if len(parts) < 2 or not parts[1].isdigit():
             results.append(
                 InlineQueryResultArticle(
-                    id="notenough",
-                    title="تبر کافی نداری!",
-                    input_message_content=InputTextMessageContent("تبرت برای این مسابقه کافی نیست!")
+                    id="duel_invalid",
+                    title="فرمت اشتباه",
+                    input_message_content=InputTextMessageContent("مثال صحیح: مبارزه 5")
                 )
             )
         else:
-            results.append(
-                InlineQueryResultArticle(
-                    id="duel",
-                    title=f"🏹 مسابقه تبر ({amount})",
-                    input_message_content=InputTextMessageContent(f"{username} می‌خواد مسابقه بده! برای {amount} واحد!"),
-                    reply_markup=InlineKeyboardMarkup().add(
-                        InlineKeyboardButton("قبول چالش", callback_data=f"duel|{user_id}|{username}|{amount}")
+            cost = int(parts[1])
+            cursor.execute('SELECT axe_size FROM users WHERE group_id = ? AND user_id = ?', (group_id, user_id))
+            row = cursor.fetchone()
+            if not row or row[0] < cost:
+                results.append(
+                    InlineQueryResultArticle(
+                        id="duel_fail",
+                        title="تبر کافی نداری",
+                        input_message_content=InputTextMessageContent("تبر کافی برای مبارزه نداری!")
                     )
                 )
-            )
+            else:
+                duel_id = f"{user_id}_{random.randint(1000,9999)}"
+                btn = InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("قبول مبارزه", callback_data=f"duel|{duel_id}|{user_id}|{cost}|{username}")
+                )
+                results.append(
+                    InlineQueryResultArticle(
+                        id="duel_start",
+                        title="درخواست مبارزه",
+                        input_message_content=InputTextMessageContent(f"⚔️ {username} درخواست مبارزه با {cost} واحد تبر داده!"),
+                        reply_markup=btn
+                    )
+                )
 
-await query.answer(results, cache_time=0)
+    await query.answer(results, cache_time=0)
 
-@dp.callback_query_handler(lambda c: c.data.startswith("duel")) async def handle_duel(callback_query: types.CallbackQuery): _, challenger_id, challenger_name, amount = callback_query.data.split("|") challenger_id = int(challenger_id) amount = int(amount) responder = callback_query.from_user
+# هندلر دکمه مبارزه
+@dp.callback_query_handler(lambda c: c.data.startswith("duel"))
+async def process_duel(callback: types.CallbackQuery):
+    duel_id, attacker_id, cost, attacker_name = callback.data.split('|')[1:]
+    attacker_id = int(attacker_id)
+    cost = int(cost)
+    user_id = callback.from_user.id
+    username = callback.from_user.full_name
 
-if responder.id == challenger_id:
-    await callback_query.answer("نمی‌تونی خودت با خودت مبارزه کنی!", show_alert=True)
-    return
+    if user_id == attacker_id:
+        await callback.answer("نمی‌تونی با خودت مبارزه کنی!", show_alert=True)
+        return
 
-# گرفتن اطلاعات از دیتابیس
-for uid in (challenger_id, responder.id):
-    register_user(uid, uid, responder.full_name if uid == responder.id else challenger_name)
+    group_id = callback.message.chat.id
 
-cursor.execute("SELECT axe_size FROM users WHERE group_id = ? AND user_id = ?", (challenger_id, challenger_id))
-c_size = cursor.fetchone()[0]
-cursor.execute("SELECT axe_size FROM users WHERE group_id = ? AND user_id = ?", (responder.id, responder.id))
-r_size = cursor.fetchone()[0]
+    cursor.execute('SELECT axe_size FROM users WHERE group_id = ? AND user_id = ?', (group_id, attacker_id))
+    attacker = cursor.fetchone()
 
-if c_size < amount or r_size < amount:
-    await callback_query.message.edit_text("❌ یکی از طرفین تبر کافی برای این مسابقه نداره!")
-    return
+    cursor.execute('SELECT axe_size FROM users WHERE group_id = ? AND user_id = ?', (group_id, user_id))
+    defender = cursor.fetchone()
 
-winner_id = random.choice([challenger_id, responder.id])
-loser_id = responder.id if winner_id == challenger_id else challenger_id
+    if not attacker or attacker[0] < cost:
+        await callback.message.edit_text("مبارزه لغو شد! مهاجم تبر کافی نداشت.")
+        return
 
-# انتقال امتیاز
-cursor.execute("UPDATE users SET axe_size = axe_size + ? WHERE group_id = ? AND user_id = ?",
-               (amount, winner_id, winner_id))
-cursor.execute("UPDATE users SET axe_size = axe_size - ? WHERE group_id = ? AND user_id = ?",
-               (amount, loser_id, loser_id))
-conn.commit()
+    if not defender or defender[0] < cost:
+        await callback.message.edit_text("مبارزه لغو شد! مدافع تبر کافی نداشت.")
+        return
 
-winner = challenger_name if winner_id == challenger_id else responder.full_name
-await callback_query.message.edit_text(f"🏆 برنده مسابقه: {winner} ({amount} واحد به دست آورد!)")
+    winner = random.choice([attacker_name, username])
+    loser = attacker_name if winner == username else username
 
-@app.get("/") def home(): return {"status": "axe bot is running"}
+    # انتقال امتیاز
+    if winner == username:
+        cursor.execute('UPDATE users SET axe_size = axe_size + ? WHERE group_id = ? AND user_id = ?', (cost, group_id, user_id))
+        cursor.execute('UPDATE users SET axe_size = axe_size - ? WHERE group_id = ? AND user_id = ?', (cost, group_id, attacker_id))
+    else:
+        cursor.execute('UPDATE users SET axe_size = axe_size + ? WHERE group_id = ? AND user_id = ?', (cost, group_id, attacker_id))
+        cursor.execute('UPDATE users SET axe_size = axe_size - ? WHERE group_id = ? AND user_id = ?', (cost, group_id, user_id))
 
-if name == "main": def start_bot(): executor.start_polling(dp, skip_updates=True)
+    conn.commit()
 
-threading.Thread(target=start_bot).start()
-uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    await callback.message.edit_text(f"🏆 {winner} در مبارزه برنده شد!\n😢 {loser} بازنده شد و {cost} واحد تبر از دست داد.")
 
+# FastAPI root
+@app.get("/")
+def read_root():
+    return {"status": "ok"}
+
+# اجرای موازی ربات و FastAPI
+if __name__ == "__main__":
+    def start_bot():
+        executor.start_polling(dp, skip_updates=True)
+
+    threading.Thread(target=start_bot).start()
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
