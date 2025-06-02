@@ -1,7 +1,7 @@
 import sqlite3
 import random
 import os
-import asyncio
+import threading
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputTextMessageContent, InlineQueryResultArticle
@@ -10,15 +10,18 @@ from aiogram.utils import executor
 from fastapi import FastAPI
 import uvicorn
 
+# خواندن توکن از متغیر محیطی
 API_TOKEN = os.getenv('BOT_TOKEN')
 
+# ساخت ربات
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
-app = FastAPI()  # ایجاد سرور FastAPI
+# ساخت اپلیکیشن FastAPI
+app = FastAPI()
 
-# اتصال به دیتابیس
-conn = sqlite3.connect('database.db')
+# اتصال به دیتابیس SQLite
+conn = sqlite3.connect('database.db', check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute('''
@@ -32,6 +35,7 @@ CREATE TABLE IF NOT EXISTS users (
 ''')
 conn.commit()
 
+# تابع تعیین لقب بر اساس امتیاز
 def get_title(axe_size):
     if axe_size < 20:
         return "جوجه تبر"
@@ -44,6 +48,7 @@ def get_title(axe_size):
     else:
         return "شاه تبر"
 
+# ثبت یا آپدیت کاربر
 def register_user(group_id, user_id, username):
     cursor.execute('SELECT * FROM users WHERE group_id = ? AND user_id = ?', (group_id, user_id))
     if cursor.fetchone() is None:
@@ -53,6 +58,7 @@ def register_user(group_id, user_id, username):
         cursor.execute('UPDATE users SET username = ? WHERE group_id = ? AND user_id = ?', (username, group_id, user_id))
         conn.commit()
 
+# هندلر اینلاین کوئری
 @dp.inline_handler()
 async def inline_handler(query: types.InlineQuery):
     user_id = query.from_user.id
@@ -165,6 +171,7 @@ async def inline_handler(query: types.InlineQuery):
 
     await query.answer(results, cache_time=0)
 
+# هندلر کلیک دکمه
 @dp.callback_query_handler(lambda c: c.data.startswith('attack'))
 async def process_callback_attack(callback_query: types.CallbackQuery):
     data = callback_query.data.split('|')
@@ -185,26 +192,12 @@ async def process_callback_attack(callback_query: types.CallbackQuery):
 def read_root():
     return {"message": "Axe Bot is Alive!"}
 
-async def main():
-    loop = asyncio.get_event_loop()
-    loop.create_task(executor.start_polling(dp, skip_updates=True))
-    config = uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv('PORT', 8080)))
-    server = uvicorn.Server(config)
-    await server.serve()
-
+# استارت همزمان ربات و سرور
 if __name__ == '__main__':
-    asyncio.run(main())
-    if __name__ == '__main__':
-    import threading
-
-    # استارت ربات تو یه ترد جدا
     def start_bot():
         executor.start_polling(dp, skip_updates=True)
 
     bot_thread = threading.Thread(target=start_bot)
     bot_thread.start()
 
-    # ران کردن سرور FastAPI
-    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv('PORT', 8080)))
-
