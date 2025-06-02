@@ -194,3 +194,17 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+    if __name__ == '__main__':
+    import threading
+
+    # استارت ربات تو یه ترد جدا
+    def start_bot():
+        executor.start_polling(dp, skip_updates=True)
+
+    bot_thread = threading.Thread(target=start_bot)
+    bot_thread.start()
+
+    # ران کردن سرور FastAPI
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv('PORT', 8080)))
+
